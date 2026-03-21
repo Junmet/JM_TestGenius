@@ -1,0 +1,8 @@
+[project]
+name = "JM_TestGenius"
+version = "0.1.0"
+description = "Generate test points and test cases from requirement documents using LangChain + DeepSeek."
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120

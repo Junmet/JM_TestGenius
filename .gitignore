@@ -1,0 +1,35 @@
+# 环境与密钥（切勿提交）
+.env
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 输入文档（每人本地放置需求文档，不提交到仓库）
+input/
+
+# 生成结果与调试（可选：若希望仓库不含 output 可取消注释）
+output/
+
+# 调试文件（解析/流程报错时写入，不提交）
+debug/
+
+# 日志
+log/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
