@@ -18,11 +18,14 @@ def write_outputs(result: GenerationResult, output_dir: Path) -> list[Path]:
     - 思维导图 XMind（测试点 + 测试用例两个分支）
     - 测试用例 Markdown 表格
     - 测试用例 Excel
-    - meta 信息（测试点 / 假设 / 风险 / 范围）
+    - meta 信息（Mermaid 思维导图 / 测试点 / 假设 / 风险 / 范围）
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(result.source_name).stem
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    result, id_renamed = _deduplicate_test_case_ids(result)
+    if id_renamed:
+        logger.info("已自动重编号 %d 条用例（重复或空编号），避免导入 TMS 时 ID 冲突", id_renamed)
     quality_warnings = _validate_result_quality(result)
     for w in quality_warnings:
         logger.warning("质量校验告警：%s", w)
@@ -193,11 +196,20 @@ def _render_meta_md(result: GenerationResult, ts: str, quality_warnings: list[st
             return "- （无）\n"
         return "".join([f"- {i}\n" for i in items])
 
+    mm = (result.mindmap_mermaid or "").strip()
+    if mm:
+        # 大纲阶段已生成 mindmap 语法；此处加围栏便于 GitHub/GitLab 等直接渲染
+        mermaid_block = f"```mermaid\n{mm}\n```\n\n"
+    else:
+        mermaid_block = "_（本稿未生成 Mermaid 思维导图内容）_\n\n"
+
     return (
         f"## 生成信息\n\n"
         f"- **生成时间**: {ts}\n"
         f"- **来源文件**: {result.source_name}\n"
         f"- **输出语言**: {result.language}\n\n"
+        f"## 思维导图（Mermaid）\n\n"
+        f"{mermaid_block}"
         f"## 测试点（列表）\n\n"
         + bullets(result.test_points)
         + "\n## 假设\n\n"
@@ -209,6 +221,38 @@ def _render_meta_md(result: GenerationResult, ts: str, quality_warnings: list[st
         + "\n## 质量检查告警\n\n"
         + bullets(quality_warnings)
     )
+
+
+def _next_free_case_id(used: set[str]) -> str:
+    n = 1
+    while True:
+        cand = f"TC-{n:03d}"
+        if cand not in used:
+            return cand
+        n += 1
+
+
+def _deduplicate_test_case_ids(result: GenerationResult) -> tuple[GenerationResult, int]:
+    """
+    按出现顺序保留首次出现的编号；空编号或与已占用编号重复的用例自动分配 TC-001 起未占用编号。
+    返回 (新结果, 重编号条数)。
+    """
+    used: set[str] = set()
+    renamed = 0
+    new_cases: list[TestCase] = []
+    for tc in result.test_cases or []:
+        raw = (tc.id or "").strip()
+        if raw and raw not in used:
+            used.add(raw)
+            new_cases.append(tc)
+            continue
+        new_id = _next_free_case_id(used)
+        used.add(new_id)
+        renamed += 1
+        new_cases.append(tc.model_copy(update={"id": new_id}))
+    if not renamed:
+        return result, 0
+    return result.model_copy(update={"test_cases": new_cases}), renamed
 
 
 def _join_list(items: list[str]) -> str:

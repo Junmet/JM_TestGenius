@@ -40,6 +40,10 @@ class LLMJSONParseError(LLMError):
     """模型 JSON 解析异常。"""
 
 
+class LLMAuthenticationError(LLMError):
+    """API Key 无效或未授权（如 HTTP 401）。"""
+
+
 class OutlineResult(BaseModel):
     """
     大纲阶段的 LLM 输出：
@@ -63,6 +67,29 @@ class CasesBatchResult(BaseModel):
     """
 
     test_cases: list[TestCase] = Field(default_factory=list)
+
+
+def _fill_missing_test_case_ids(data: Any) -> int:
+    """
+    模型偶发漏掉某条用例的 id，补占位编号以便通过 Pydantic 校验。
+    后续 writers 仍会按全局去重规则重编号。
+    返回补全条数。
+    """
+    if not isinstance(data, dict):
+        return 0
+    cases = data.get("test_cases")
+    if not isinstance(cases, list):
+        return 0
+    filled = 0
+    for i, tc in enumerate(cases):
+        if not isinstance(tc, dict):
+            continue
+        raw = tc.get("id")
+        rid = raw.strip() if isinstance(raw, str) else ""
+        if not rid:
+            tc["id"] = f"TC-BATCH-{i + 1:03d}"
+            filled += 1
+    return filled
 
 
 def build_llm(cfg: AppConfig) -> ChatOpenAI:
@@ -246,6 +273,12 @@ def generate_cases_batch(
         raw = (msg.content or "").strip()
         try:
             data = _parse_or_debug(raw, debug_stem=f"cases_{Path(source_name).stem}")
+            n_id = _fill_missing_test_case_ids(data)
+            if n_id:
+                logger.warning(
+                    "本批模型返回中有 %d 条用例缺少 id，已补占位编号后再校验。",
+                    n_id,
+                )
             result = TypeAdapter(CasesBatchResult).validate_python(data)
             logger.info(
                 "用例批次生成完成：来源=%s，测试点=%.30s，本批生成=%d",
@@ -319,6 +352,19 @@ def _invoke_llm_with_classification(
         msg = str(e)
         msg_lower = msg.lower()
         logger.error("LLM 调用失败（阶段=%s，来源=%s）：%s", stage, source_name, msg)
+        if (
+            "401" in msg
+            or "403" in msg
+            or "invalid_api_key" in msg_lower
+            or "incorrect api key" in msg_lower
+            or "authenticationerror" in msg_lower.replace(" ", "")
+            or ("unauthorized" in msg_lower and "api" in msg_lower)
+        ):
+            raise LLMAuthenticationError(
+                f"{stage}失败：API Key 无效或未授权（401/鉴权失败）。"
+                "请检查 .env 中 DASHSCOPE_API_KEY / QWEN_API_KEY（通义千问）"
+                "或 DEEPSEEK_API_KEY（DeepSeek），并确认 LLM_API_KEY 未误覆盖为错误密钥。"
+            ) from e
         if (
             "length limit" in msg_lower
             or "maximum context length" in msg_lower

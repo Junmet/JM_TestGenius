@@ -17,6 +17,7 @@ from .llm import (
     LLMConnectionError,
     LLMLengthLimitError,
     LLMJSONParseError,
+    LLMAuthenticationError,
 )
 from .parsers import iter_input_files, parse_document
 from .models import GenerationResult
@@ -276,6 +277,13 @@ def main() -> int:
             elif isinstance(e, LLMJSONParseError):
                 console.print(
                     f"[red]跳过 {path.name}：模型返回格式异常。已写入 debug 文件，详见日志。[/red]"
+                )
+            elif isinstance(e, LLMAuthenticationError):
+                console.print(
+                    f"[red]跳过 {path.name}：API Key 无效或未授权。[/red]\n"
+                    "[yellow]通义千问请在阿里云百炼/Model Studio 创建 API Key，写入 DASHSCOPE_API_KEY；"
+                    "使用 DeepSeek 时设置 LLM_PROVIDER=deepseek 并配置 DEEPSEEK_API_KEY。"
+                    "若设置了 LLM_API_KEY，请确认其对应所选厂商。[/yellow]"
                 )
             else:
                 console.print(f"[red]跳过 {path.name}：处理失败（详细信息见日志）[/red]")
