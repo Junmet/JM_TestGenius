@@ -117,5 +117,3 @@ python -m src.main --help
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)（见仓库根目录 `LICENSE` 全文）。
-
-若你希望版权声明署名为个人或组织，可自行修改 `LICENSE` 首行 **Copyright** 内容。
