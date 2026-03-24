@@ -8,3 +8,4 @@ pandas>=2.2.0
 openpyxl>=3.1.2
 rich>=13.7.1
 py-xmind16>=0.1.0
+streamlit>=1.32.0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from .prompts import (
     OUTLINE_USER_TEMPLATE,
     CASES_BATCH_USER_TEMPLATE,
 )
+from .usage import UsageTracker
 
 
 logger = logging.getLogger(__name__)
@@ -126,6 +128,8 @@ def generate_from_text(
     source_name: str,
     document_text: str,
     max_cases: int,
+    usage: UsageTracker | None = None,
+    sleep_after_call: float = 0.0,
 ) -> GenerationResult:
     """
     旧版“一次性生成测试点 + 全部用例”的接口，目前保留以兼容/复用。
@@ -160,6 +164,8 @@ def generate_from_text(
         ],
         source_name=source_name,
         stage="完整生成",
+        usage=usage,
+        sleep_after=sleep_after_call,
     )
 
     raw = (msg.content or "").strip()
@@ -183,6 +189,8 @@ def generate_outline(
     llm: ChatOpenAI,
     source_name: str,
     document_text: str,
+    usage: UsageTracker | None = None,
+    sleep_after_call: float = 0.0,
 ) -> OutlineResult:
     """
     第 1 阶段：基于原始需求文档生成“测试大纲”：
@@ -207,6 +215,8 @@ def generate_outline(
         ],
         source_name=source_name,
         stage="大纲生成",
+        usage=usage,
+        sleep_after=sleep_after_call,
     )
     raw = (msg.content or "").strip()
     data = _parse_or_debug(raw, debug_stem=f"outline_{Path(source_name).stem}")
@@ -228,6 +238,8 @@ def generate_cases_batch(
     test_point: str,
     batch_size: int,
     existing_titles: list[str],
+    usage: UsageTracker | None = None,
+    sleep_after_call: float = 0.0,
 ) -> CasesBatchResult:
     """
     第 2 阶段：围绕单个测试点，批量生成若干条测试用例。
@@ -269,6 +281,8 @@ def generate_cases_batch(
             ],
             source_name=source_name,
             stage=f"批量用例生成-第{attempt + 1}次",
+            usage=usage,
+            sleep_after=sleep_after_call,
         )
         raw = (msg.content or "").strip()
         try:
@@ -345,9 +359,29 @@ def _invoke_llm_with_classification(
     messages: list[dict[str, str]],
     source_name: str,
     stage: str,
+    usage: UsageTracker | None = None,
+    sleep_after: float = 0.0,
 ):
     try:
-        return llm.invoke(messages)
+        msg = llm.invoke(messages)
+        if usage is not None:
+            um = getattr(msg, "usage_metadata", None)
+            if not isinstance(um, dict):
+                um = None
+            rm = getattr(msg, "response_metadata", None)
+            if not isinstance(rm, dict):
+                rm = {}
+            usage.record(
+                stage=stage,
+                source_name=source_name,
+                messages=messages,
+                content=msg.content or "",
+                response_metadata=rm,
+                usage_metadata=um,
+            )
+        if sleep_after > 0:
+            time.sleep(sleep_after)
+        return msg
     except Exception as e:  # noqa: BLE001
         msg = str(e)
         msg_lower = msg.lower()
