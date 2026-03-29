@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import logging
+from typing import Any
 
 import pandas as pd
 
@@ -12,7 +13,35 @@ from .models import GenerationResult, TestCase
 logger = logging.getLogger(__name__)
 
 
-def write_outputs(result: GenerationResult, output_dir: Path) -> list[Path]:
+def build_testcase_rows(result: GenerationResult) -> list[dict[str, Any]]:
+    """与 Excel 表头一致的行数据，供导出模板复用。"""
+    rows: list[dict[str, Any]] = []
+    for tc in result.test_cases:
+        rows.append(
+            {
+                "编号": tc.id,
+                "优先级": tc.priority,
+                "模块": tc.module,
+                "测试标题": tc.title,
+                "摘要": tc.summary,
+                "前置条件": tc.preconditions,
+                "测试步骤": _join_list(tc.steps),
+                "期望结果": _join_list(tc.expected),
+                "实际结果（可为空）": tc.actual_result,
+                "类型": tc.test_type,
+                "测试数据": tc.data,
+                "备注": tc.remarks,
+            }
+        )
+    return rows
+
+
+def write_outputs(
+    result: GenerationResult,
+    output_dir: Path,
+    *,
+    export_formats: frozenset[str] | None = None,
+) -> list[Path]:
     """
     将一次生成结果写入磁盘：
     - 思维导图 XMind（测试点 + 测试用例两个分支）
@@ -47,6 +76,15 @@ def write_outputs(result: GenerationResult, output_dir: Path) -> list[Path]:
 
     logger.info("正在写入 Excel 测试用例：%s", testcases_xlsx_path)
     _write_testcases_xlsx(result, testcases_xlsx_path)
+
+    rows = build_testcase_rows(result)
+    if export_formats is None:
+        export_formats = frozenset({"csv", "zentao", "testlink", "jira"})
+    if export_formats:
+        from .export_templates import write_template_exports
+
+        extra = write_template_exports(result, output_dir, stem, export_formats, rows)
+        paths.extend(extra)
 
     logger.info("正在写入元信息文件：%s", meta_path)
     meta_path.write_text(_render_meta_md(result, ts, quality_warnings), encoding="utf-8")
@@ -103,24 +141,7 @@ def _markdown_table(cases: list[TestCase]) -> str:
 
 
 def _write_testcases_xlsx(result: GenerationResult, path: Path) -> None:
-    rows = []
-    for tc in result.test_cases:
-        rows.append(
-            {
-                "编号": tc.id,
-                "优先级": tc.priority,
-                "模块": tc.module,
-                "测试标题": tc.title,
-                "摘要": tc.summary,
-                "前置条件": tc.preconditions,
-                "测试步骤": _join_list(tc.steps),
-                "期望结果": _join_list(tc.expected),
-                "实际结果（可为空）": tc.actual_result,
-                "类型": tc.test_type,
-                "测试数据": tc.data,
-                "备注": tc.remarks,
-            }
-        )
+    rows = build_testcase_rows(result)
     # 用 pandas 写入 Excel，方便评审和导入测试管理系统
     df = pd.DataFrame(rows)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:

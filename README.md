@@ -12,10 +12,15 @@
 - **输出**（每个源文件一套，文件名以**源文件主名**为前缀）：
   - `*.xmind`：思维导图（含测试点与测试用例分支）。
   - `*.testcases.md`：Markdown 表格用例。
-  - `*.testcases.xlsx`：Excel 用例表。
+  - `*.testcases.xlsx`：Excel 用例表（canonical 列）。
   - `*.meta.md`：元信息（假设、风险、范围等）。
+  - **可选额外导出**（与 `*.testcases.xlsx` 同源列映射，便于导入 TMS；默认全开，可用 `--exports` 或 Web 侧多选关闭）：
+    - `*.testcases.csv`：UTF-8 BOM，与 Excel 列一致。
+    - `*.zentao.csv`：禅道常见用例 CSV 列名（版本差异大，导入前请对照系统模板微调）。
+    - `*.testlink.xml`：TestLink 1.9 风格 `testsuite`/`testcase` XML。
+    - `*.jira.csv`：Jira 通用 CSV（Summary/Description/Priority 等，便于再加工或 Xray/Zephyr 适配）。
 - **模型**：默认 **DeepSeek**（OpenAI 兼容）；可选 **通义千问**（阿里云 DashScope 兼容模式）。通过环境变量切换与配置密钥。
-- **日志**：运行日志写入项目根目录 `log/`，按时间戳命名（该目录已在 `.gitignore` 中忽略）。
+- **日志**：运行日志写入项目根目录 `log/`，按时间戳命名（该目录已在 `.gitignore` 中忽略）。可选 **`LLM_LOG_IO`**（见配置表）在日志中记录 LLM 请求的摘要；命令行 **`-v` / `--verbose`** 可将 `src` 包的 DEBUG/INFO 同步到终端，便于排障。
 
 ## 环境要求
 
@@ -64,6 +69,7 @@ copy .env.example .env
 | `DEEPSEEK_TIMEOUT` | 超时秒数回退（未设置 `LLM_TIMEOUT` 时） | `120` |
 | `DEEPSEEK_MAX_TOKENS` | 最大 token 回退（未设置 `LLM_MAX_TOKENS` 时） | `16384` |
 | `APP_LANGUAGE` | 输出语言：`zh` 或 `en`（也可用命令行 `--language` 覆盖） |
+| `LLM_LOG_IO` | 可选。`1` / `true` / `yes` / `on` 时，在 `log/` 中记录每次 LLM 调用的**请求与响应摘要**（长度与各段截断预览；不含 Key，见 `.env.example`）。未设置或为 `0` 则不记录 |
 
 ## 启动与使用
 
@@ -87,6 +93,9 @@ python -m src.main
 | `--sleep-after-call` | `0` | 每次 LLM 调用成功后休眠秒数，用于限流、降低打满配额概率 |
 | `--sleep-between-files` | `0` | 每处理完一个文件再处理下一个前休眠秒数 |
 | `--max-total-tokens` | `0`（不限制） | 单次任务累计 token 上限；优先累加接口返回的 token，否则按「请求+回复字符」÷4 估算，超限则停止后续调用 |
+| `-v` / `--verbose` | 关闭 | 将本项目 `src` 包下的 DEBUG/INFO 日志输出到**终端**（详细排查仍以 `log/` 文件为准；不会影响 HTTP 库的刷屏级别） |
+| `--llm-log-io` | 关闭 | 本次运行**强制开启** LLM 请求/响应摘要日志（写入 `log/`；与 `.env` 中 `LLM_LOG_IO` 二选一即可，CLI 显式传入以本次为准） |
+| `--exports` | `csv,zentao,testlink,jira` | 额外导出模板（与 Excel 同源映射）：逗号分隔 `csv` / `zentao` / `testlink` / `jira`；`none` 表示不生成这四种文件（仍生成 xlsx/md/meta/xmind） |
 
 任务结束后，终端会输出 **LLM 用量**（调用次数、上报 token 累计、估算 token、请求/回复字符数），便于核对成本与配额。
 
@@ -98,7 +107,7 @@ python -m src.main
 streamlit run streamlit_app.py
 ```
 
-浏览器中可选择 **输入/输出目录**、查看 **进度条**、任务结束后 **预览 Excel 用例表** 与 Markdown 节选。需已配置 `.env` 中的 API Key。每次点击「开始生成」会写入项目根目录 **`log/`** 下带时间戳的日志文件（与命令行一致），并在运行 `streamlit run` 的**终端**同步输出 INFO 级别日志。
+浏览器中可选择 **输入/输出目录**、**额外导出格式**（CSV / 禅道 / TestLink / Jira 模板，与 Excel 同源）、查看 **进度条**、任务结束后 **预览 Excel 用例表** 与 Markdown 节选。侧栏可选 **控制台详细日志**（等同命令行 `--verbose`，终端输出 `src` 的 DEBUG/INFO）与 **LLM 请求/响应摘要**（等同 `LLM_LOG_IO`）。需已配置 `.env` 中的 API Key。每次点击「开始生成」会写入项目根目录 **`log/`** 下带时间戳的日志文件（与命令行一致），并在运行 `streamlit run` 的**终端**同步输出 INFO 级别日志（勾选详细日志时为 DEBUG）。
 
 示例：
 

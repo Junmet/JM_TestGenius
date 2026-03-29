@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 import time
 
 from rich.console import Console
 from rich.table import Table
 
+from .export_templates import parse_export_formats
+from .llm import set_llm_io_logging
 from .logging_config import setup_generation_logging
 from .parsers import iter_input_files
 from .pipeline import PipelineConfig, init_llm_from_env, run_pipeline
@@ -29,7 +32,8 @@ def main() -> int:
     args = _parse_args()
     start_ts = time.time()
 
-    log_file = setup_generation_logging(stream=False)
+    log_file = setup_generation_logging(stream=False, verbose=args.verbose)
+    set_llm_io_logging(args.llm_log_io or _env_bool("LLM_LOG_IO"))
     logger.info("已启动用例生成命令行")
     logger.info("日志文件：%s", log_file)
     logger.info("已解析参数：%s", vars(args))
@@ -75,6 +79,7 @@ def main() -> int:
         sleep_after_call=args.sleep_after_call,
         sleep_between_files=args.sleep_between_files,
         max_total_tokens=max_total_tokens,
+        export_formats=parse_export_formats(args.exports),
     )
 
     def _cli_progress(msg: str, frac: float) -> None:
@@ -204,7 +209,29 @@ def _parse_args() -> argparse.Namespace:
         default=0,
         help="单次任务累计 token 上限（估算：优先用接口返回，否则按字符/4）。0 表示不限制",
     )
+    p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="将本项目日志（含关键步骤的 DEBUG/INFO）输出到控制台，便于排障；详细内容仍以 log/ 文件为准",
+    )
+    p.add_argument(
+        "--llm-log-io",
+        action="store_true",
+        help="在日志中记录每次 LLM 调用的请求/响应摘要（长度与各段前若干字符，已做密钥形态遮蔽）；也可用环境变量 LLM_LOG_IO=1",
+    )
+    p.add_argument(
+        "--exports",
+        default="csv,zentao,testlink,jira",
+        metavar="LIST",
+        help="额外导出：逗号分隔 csv,zentao,testlink,jira（与 Excel 同源列映射）；none 表示不导出这些模板",
+    )
     return p.parse_args()
+
+
+def _env_bool(name: str) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
 
 
 if __name__ == "__main__":

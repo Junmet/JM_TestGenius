@@ -9,11 +9,12 @@ _FMT = "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
 _TAG = "_jm_testgenius_mark"
 
 
-def setup_generation_logging(*, stream: bool = False) -> Path:
+def setup_generation_logging(*, stream: bool = False, verbose: bool = False) -> Path:
     """
     为一次「生成任务」配置根日志：
     - 始终写入项目根目录下 log/ 中带时间戳的 .log 文件（与 CLI 行为一致）；
     - stream=True 时额外输出到 stderr，便于 `streamlit run` 的终端看到日志。
+    - verbose=True（CLI --verbose）时：stderr 输出本项目的 DEBUG/INFO，便于排障；不写入完整第三方 HTTP 原文。
 
     在同一进程内重复调用（例如 Streamlit 再次点击「开始生成」）会先移除此前挂接的
     同项目 FileHandler / StreamHandler，避免重复写入或刷屏。
@@ -24,7 +25,7 @@ def setup_generation_logging(*, stream: bool = False) -> Path:
 
     root = logging.getLogger()
     for h in list(root.handlers):
-        if getattr(h, _TAG, None) in ("file", "stream"):
+        if getattr(h, _TAG, None) in ("file", "stream", "verbose"):
             root.removeHandler(h)
             try:
                 h.close()
@@ -41,10 +42,21 @@ def setup_generation_logging(*, stream: bool = False) -> Path:
 
     if stream:
         sh = logging.StreamHandler(sys.stderr)
-        sh.setLevel(logging.INFO)
+        sh.setLevel(logging.DEBUG if verbose else logging.INFO)
         sh.setFormatter(fmt)
         setattr(sh, _TAG, "stream")
         root.addHandler(sh)
+    elif verbose:
+        vh = logging.StreamHandler(sys.stderr)
+        vh.setLevel(logging.DEBUG)
+        vh.setFormatter(fmt)
+        setattr(vh, _TAG, "verbose")
+        root.addHandler(vh)
+
+    if verbose:
+        logging.getLogger("src").setLevel(logging.DEBUG)
+    else:
+        logging.getLogger("src").setLevel(logging.NOTSET)
 
     root.setLevel(logging.INFO)
     # 第三方 HTTP 客户端默认 INFO 会刷屏；细节如需可改为 DEBUG

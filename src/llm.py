@@ -24,6 +24,59 @@ from .usage import UsageTracker
 
 
 logger = logging.getLogger(__name__)
+io_logger = logging.getLogger(__name__ + ".io")
+
+_llm_io_log_enabled: bool = False
+
+# 摘要日志中尝试遮蔽的常见密钥形态（消息正文一般不含 Key；防御性处理）
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[a-zA-Z0-9]{16,}", re.IGNORECASE),
+    re.compile(r"(api[_-]?key|authorization)\s*[:=]\s*[^\s]{8,}", re.IGNORECASE),
+)
+
+
+def set_llm_io_logging(enabled: bool) -> None:
+    """开启后仅记录请求/响应长度与截断摘要，不记录完整正文与 API Key。"""
+    global _llm_io_log_enabled
+    _llm_io_log_enabled = bool(enabled)
+
+
+def _redact_for_log(text: str) -> str:
+    s = text or ""
+    for pat in _SECRET_PATTERNS:
+        s = pat.sub("[redacted]", s)
+    return s
+
+
+def _preview_line(text: str, *, limit: int = 200) -> str:
+    t = _redact_for_log(text).replace("\r\n", "\n").replace("\n", " ↵ ")
+    if len(t) > limit:
+        return t[: limit - 1] + "…"
+    return t
+
+
+def _log_llm_io_summary(
+    *,
+    stage: str,
+    source_name: str,
+    messages: list[dict[str, str]],
+    response_text: str,
+) -> None:
+    if not _llm_io_log_enabled:
+        return
+    segs: list[str] = []
+    for m in messages:
+        role = str(m.get("role") or "?")
+        body = str(m.get("content") or "")
+        segs.append(f"{role}:chars={len(body)} head={_preview_line(body)}")
+    io_logger.info(
+        "LLM IO | stage=%s | source=%s | %s | response_chars=%d | response_head=%s",
+        stage,
+        source_name,
+        " || ".join(segs),
+        len(response_text or ""),
+        _preview_line(response_text or ""),
+    )
 
 
 class LLMError(RuntimeError):
@@ -364,6 +417,12 @@ def _invoke_llm_with_classification(
 ):
     try:
         msg = llm.invoke(messages)
+        _log_llm_io_summary(
+            stage=stage,
+            source_name=source_name,
+            messages=messages,
+            response_text=msg.content or "",
+        )
         if usage is not None:
             um = getattr(msg, "usage_metadata", None)
             if not isinstance(um, dict):

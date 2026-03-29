@@ -40,6 +40,8 @@ class PipelineConfig:
     sleep_after_call: float = 0.0
     sleep_between_files: float = 0.0
     max_total_tokens: int | None = None
+    # None 表示使用 writers 默认（csv+zentao+testlink+jira）；空 frozenset 表示不生成额外导出
+    export_formats: frozenset[str] | None = None
 
 
 @dataclass
@@ -246,7 +248,11 @@ def run_pipeline(
             })
 
             logger.info("写入输出文件：%s", path.name)
-            out_paths = write_outputs(result, config.output_dir)
+            out_paths = write_outputs(
+                result,
+                config.output_dir,
+                export_formats=config.export_formats,
+            )
             file_elapsed_min = (time.time() - file_start_ts) / 60.0
             logger.info(
                 "文档处理完成：source=%s，用时=%.2f 分钟",
