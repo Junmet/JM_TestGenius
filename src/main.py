@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .export_templates import parse_export_formats
+from .input_loader import collect_parsed_documents
 from .llm import set_llm_io_logging
 from .logging_config import setup_generation_logging
 from .parsers import iter_input_files
@@ -40,24 +41,40 @@ def main() -> int:
 
     input_dir = Path(args.input).resolve()
     output_dir = Path(args.output).resolve()
+
+    url_lines: list[str] = list(args.url or [])
+    if args.url_file:
+        uf = Path(args.url_file).resolve()
+        if not uf.is_file():
+            raise FileNotFoundError(f"--url-file 不是文件：{uf}")
+        url_lines.extend(uf.read_text(encoding=args.encoding).splitlines())
+
     if not input_dir.exists():
         input_dir.mkdir(parents=True, exist_ok=True)
-        msg = f"未找到输入目录，已自动创建：{input_dir}"
-        console.print(
-            f"[yellow]{msg}[/yellow]\n请把需求文档放入该目录后重新运行。"
-        )
-        logger.warning(msg)
-        return 0
     if not input_dir.is_dir():
         logger.error("输入路径存在但不是目录：%s", input_dir)
         raise ValueError(f"输入路径存在但不是目录：{input_dir}")
 
     files = list(iter_input_files(input_dir))
-    if not files:
-        msg = f"输入目录中未找到支持的文档类型：{input_dir}"
+    if not files and not url_lines:
+        msg = (
+            f"输入目录中无支持文档：{input_dir}，且未提供 --url / --url-file。"
+            "请放入 .docx/.md/.txt/.pdf 或使用远程 URL。"
+        )
         console.print(f"[yellow]{msg}[/yellow]")
         logger.warning(msg)
         return 0
+
+    try:
+        documents = collect_parsed_documents(
+            local_files=files,
+            url_lines=url_lines,
+            encoding=args.encoding,
+        )
+    except Exception as e:
+        logger.exception("加载需求失败")
+        console.print(f"[red]{e}[/red]")
+        return 1
 
     logger.info("正在加载配置并初始化 LLM 客户端")
     cfg, llm = init_llm_from_env(args.language)
@@ -87,11 +104,12 @@ def main() -> int:
         console.print(msg)
 
     console.print(
-        f"[bold]任务[/bold] [cyan]{len(files)}[/cyan] 个文件 → [cyan]{output_dir}[/cyan]"
+        f"[bold]任务[/bold] [cyan]{len(documents)}[/cyan] 个来源（本地 {len(files)} + 远程 {len(url_lines)}）"
+        f" → [cyan]{output_dir}[/cyan]"
     )
 
     result = run_pipeline(
-        files=files,
+        documents=documents,
         cfg=cfg,
         llm=llm,
         config=pcfg,
@@ -222,9 +240,22 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--exports",
-        default="csv,zentao,testlink,jira",
+        default="none",
         metavar="LIST",
-        help="额外导出：逗号分隔 csv,zentao,testlink,jira（与 Excel 同源列映射）；none 表示不导出这些模板",
+        help="额外导出：逗号分隔 csv,zentao,testlink,jira（与 Excel 同源列映射）；默认 none（仅 xlsx/md/meta/xmind）",
+    )
+    p.add_argument(
+        "--url",
+        action="append",
+        default=[],
+        metavar="URL",
+        help="远程需求页 URL，可多次指定；亦可用 confluence:页面URL 或 feishu:文档URL（需 .env 凭证）",
+    )
+    p.add_argument(
+        "--url-file",
+        default=None,
+        metavar="PATH",
+        help="从文件读取 URL 列表（每行一条，# 开头为注释）",
     )
     return p.parse_args()
 

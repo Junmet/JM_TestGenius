@@ -19,7 +19,7 @@ from .llm import (
     LLMAuthenticationError,
 )
 from .models import GenerationResult
-from .parsers import parse_document
+from .parsers import ParsedDocument
 from .usage import UsageBudgetExceeded, UsageTracker, check_usage_budget
 from .writers import write_outputs
 
@@ -40,7 +40,7 @@ class PipelineConfig:
     sleep_after_call: float = 0.0
     sleep_between_files: float = 0.0
     max_total_tokens: int | None = None
-    # None 表示使用 writers 默认（csv+zentao+testlink+jira）；空 frozenset 表示不生成额外导出
+    # None 与空 frozenset 均表示不生成 csv/zentao/testlink/jira；非空则按集合写出
     export_formats: frozenset[str] | None = None
 
 
@@ -64,7 +64,7 @@ class PipelineResult:
 
 def run_pipeline(
     *,
-    files: list[Path],
+    documents: list[ParsedDocument],
     cfg: AppConfig,
     llm: ChatOpenAI,
     config: PipelineConfig,
@@ -73,20 +73,21 @@ def run_pipeline(
 ) -> PipelineResult:
     """
     核心生成流水线：解析 → 大纲 → 分批用例 → 写出。
-    供 CLI 与 Web UI 共用。
+    供 CLI 与 Web UI 共用。documents 可由本地文件或远程 URL/Wiki 解析得到。
     """
     usage = usage or UsageTracker()
     outcomes: list[FileOutcome] = []
     success_count = 0
     fail_count = 0
-    total_files = len(files)
+    total_files = len(documents)
     start_ts = time.time()
 
     def _prog(msg: str, frac: float) -> None:
         if progress_callback:
             progress_callback(msg, max(0.0, min(1.0, frac)))
 
-    for i, path in enumerate(files, 1):
+    for i, parsed in enumerate(documents, 1):
+        path = parsed.path
         base = (i - 1) / max(1, total_files)
         _prog(
             f"({i}/{total_files}) [bold]解析[/bold] {path.name}",
@@ -94,9 +95,7 @@ def run_pipeline(
         )
         try:
             file_start_ts = time.time()
-            logger.info("正在处理文件 %d/%d：%s", i, total_files, path)
-            parsed = parse_document(path, encoding=config.encoding)
-
+            logger.info("正在处理来源 %d/%d：%s", i, total_files, path)
             text = parsed.text
             if len(text) > config.max_chars:
                 logger.warning(
@@ -246,6 +245,8 @@ def run_pipeline(
                 "risks": outline.risks,
                 "out_of_scope": outline.out_of_scope,
             })
+            # 输出文件名以本地/远程解析名为准，避免模型返回的 source_name 与磁盘不一致
+            result = result.model_copy(update={"source_name": path.name})
 
             logger.info("写入输出文件：%s", path.name)
             out_paths = write_outputs(

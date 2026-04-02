@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 import logging
+import re
 
 from docx import Document
 import fitz  # PyMuPDF
@@ -17,6 +18,25 @@ SUPPORTED_SUFFIXES = {".docx", ".md", ".markdown", ".txt", ".pdf"}
 class ParsedDocument:
     path: Path
     text: str
+    """path.name 用作输出文件名主名与流水线展示名；远程来源可为合成路径。"""
+
+
+def _safe_stem_for_file(name: str, max_len: int = 80) -> str:
+    s = re.sub(r'[<>:"/\\|?*]', "_", (name or "").strip())
+    s = re.sub(r"\s+", "_", s)
+    if not s:
+        s = "remote"
+    return s[:max_len]
+
+
+def parsed_document_from_text(display_stem: str, text: str) -> ParsedDocument:
+    """
+    由远程拉取的正文构造 ParsedDocument；path 仅用于命名（以 .md 为后缀便于识别）。
+    """
+    stem = _safe_stem_for_file(display_stem)
+    path = Path(f"{stem}.remote.md")
+    normalized = _normalize_text(text)
+    return ParsedDocument(path=path, text=normalized)
 
 
 def iter_input_files(input_dir: Path) -> Iterable[Path]:

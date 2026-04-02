@@ -79,7 +79,7 @@ def write_outputs(
 
     rows = build_testcase_rows(result)
     if export_formats is None:
-        export_formats = frozenset({"csv", "zentao", "testlink", "jira"})
+        export_formats = frozenset()
     if export_formats:
         from .export_templates import write_template_exports
 
