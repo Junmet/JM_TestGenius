@@ -26,6 +26,7 @@ from src.llm import set_llm_io_logging
 from src.logging_config import setup_generation_logging
 from src.parsers import iter_input_files
 from src.pipeline import PipelineConfig, init_llm_from_env, run_pipeline
+from src.task_summary import build_task_summary, log_task_summary_line, write_task_summary_json
 from src.ui_paths import reveal_path_in_os
 from src.usage import UsageTracker
 
@@ -220,6 +221,24 @@ def main() -> None:
         sleep_call = st.slider("每次 LLM 调用后休眠(秒)", 0.0, 5.0, 0.0, 0.5)
         sleep_file = st.slider("文件之间休眠(秒)", 0.0, 30.0, 0.0, 1.0)
         max_tokens = st.number_input("累计 token 上限（0=不限制）", min_value=0, value=0, step=10000)
+        chunked_outline = st.checkbox(
+            "长文档分段大纲",
+            value=False,
+            help="对应 CLI --chunked-outline：正文超过「正文最大字符数」时按段生成大纲再合并，减少后半未读盲区（大纲调用次数增加）。",
+        )
+        outline_overlap = st.number_input(
+            "分段重叠字符",
+            min_value=0,
+            max_value=5000,
+            value=400,
+            step=50,
+            help="对应 --outline-chunk-overlap，减轻段边界丢上下文。",
+        )
+        task_summary_json = st.text_input(
+            "任务摘要 JSON（可选）",
+            value="",
+            help="对应 --task-summary-json：相对项目根或绝对路径；留空则仅写入日志中的 TASK_SUMMARY 行。",
+        )
         verbose_console = st.checkbox(
             "控制台详细日志（终端输出 src 包 DEBUG/INFO）",
             value=False,
@@ -267,7 +286,8 @@ def main() -> None:
                 logger.info("已启动 Web UI 生成任务")
                 logger.info(
                     "参数：input=%s output=%s encoding=%s max_cases=%s batch_size=%s max_chars=%s "
-                    "sleep_after_call=%s sleep_between_files=%s max_total_tokens=%s exports=%s",
+                    "sleep_after_call=%s sleep_between_files=%s max_total_tokens=%s exports=%s "
+                    "chunked_outline=%s outline_overlap=%s task_summary_json=%s",
                     inp,
                     out,
                     encoding,
@@ -278,6 +298,9 @@ def main() -> None:
                     sleep_file,
                     max_tokens if max_tokens > 0 else None,
                     export_choices,
+                    chunked_outline,
+                    outline_overlap,
+                    (task_summary_json or "").strip() or None,
                 )
 
                 progress = st.progress(0.0)
@@ -333,6 +356,8 @@ def main() -> None:
                             sleep_between_files=sleep_file,
                             max_total_tokens=max_tokens if max_tokens > 0 else None,
                             export_formats=frozenset(export_choices),
+                            chunked_outline=chunked_outline,
+                            outline_chunk_overlap=int(outline_overlap),
                         )
 
                         usage = UsageTracker()
@@ -365,6 +390,18 @@ def main() -> None:
                                 result.total_elapsed_seconds / 60.0,
                                 log_file,
                             )
+                            cmp = result.usage.token_comparison_dict()
+                            logger.info(
+                                "Token 对比：char÷4粗估=%d 接口上报累计=%d 差值(上报-粗估)=%s",
+                                cmp["char_div4_token_estimate"],
+                                cmp["sum_reported_total_tokens"],
+                                cmp["reported_minus_char_div4"],
+                            )
+                            ts = build_task_summary(result=result, config=pcfg, log_file=log_file)
+                            log_task_summary_line(logger, ts)
+                            tsp = (task_summary_json or "").strip()
+                            if tsp:
+                                write_task_summary_json(Path(tsp).resolve(), ts)
                             st.session_state[SESSION_GEN] = _serialize_gen_session(
                                 result,
                                 output_dir=out,

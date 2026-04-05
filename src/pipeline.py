@@ -13,11 +13,14 @@ from .llm import (
     build_llm,
     generate_outline,
     generate_cases_batch,
+    merge_outline_results,
+    OutlineResult,
     LLMConnectionError,
     LLMLengthLimitError,
     LLMJSONParseError,
     LLMAuthenticationError,
 )
+from .text_segments import slice_segments
 from .models import GenerationResult
 from .parsers import ParsedDocument
 from .usage import UsageBudgetExceeded, UsageTracker, check_usage_budget
@@ -42,6 +45,38 @@ class PipelineConfig:
     max_total_tokens: int | None = None
     # None 与空 frozenset 均表示不生成 csv/zentao/testlink/jira；非空则按集合写出
     export_formats: frozenset[str] | None = None
+    # 长文档：全文超过 max_chars 时对每段分别生成大纲再合并（增加 LLM 调用，减少截断盲区）
+    chunked_outline: bool = False
+    outline_chunk_overlap: int = 400
+
+
+def _source_kind_label(path: Path) -> str:
+    n = path.name.lower()
+    if ".remote." in n or n.endswith(".remote.md"):
+        if n.startswith("feishu_"):
+            return "feishu-remote"
+        return "remote-url"
+    suf = path.suffix.lower()
+    if suf == ".pdf":
+        return "pdf"
+    return suf.lstrip(".") or "local"
+
+
+def _log_truncation_kept_window(path: Path, full: str, max_chars: int) -> None:
+    kept = full[:max_chars]
+    head = kept[:120].replace("\n", "↵")
+    tail = kept[-120:].replace("\n", "↵") if len(kept) > 120 else head
+    logger.warning(
+        "正文截断：%s 类型=%s 原长=%d 保留区间=[0,%d) max_chars=%d；"
+        "保留段开头(120字)=%r 结尾(120字)=%r",
+        path.name,
+        _source_kind_label(path),
+        len(full),
+        max_chars,
+        max_chars,
+        head,
+        tail,
+    )
 
 
 @dataclass
@@ -96,30 +131,101 @@ def run_pipeline(
         try:
             file_start_ts = time.time()
             logger.info("正在处理来源 %d/%d：%s", i, total_files, path)
-            text = parsed.text
-            if len(text) > config.max_chars:
-                logger.warning(
-                    "文档已截断至 %d 字（原长 %d）：%s",
-                    config.max_chars,
-                    len(parsed.text),
-                    path.name,
-                )
-                text = text[: config.max_chars]
+            full_text = parsed.text
+            full_len = len(full_text)
+            sk = _source_kind_label(path)
 
-            logger.info(
-                "生成大纲：%s（provider=%s model=%s）",
-                path.name,
-                cfg.provider,
-                cfg.model,
-            )
-            outline = generate_outline(
-                cfg=cfg,
-                llm=llm,
-                source_name=path.name,
-                document_text=text,
-                usage=usage,
-                sleep_after_call=config.sleep_after_call,
-            )
+            if full_len <= config.max_chars:
+                logger.info(
+                    "正文未截断：%s 类型=%s 长度=%d（≤ max_chars=%d）",
+                    path.name,
+                    sk,
+                    full_len,
+                    config.max_chars,
+                )
+                logger.info(
+                    "生成大纲：%s（provider=%s model=%s）",
+                    path.name,
+                    cfg.provider,
+                    cfg.model,
+                )
+                doc_for_outline = full_text
+                outline = generate_outline(
+                    cfg=cfg,
+                    llm=llm,
+                    source_name=path.name,
+                    document_text=doc_for_outline,
+                    usage=usage,
+                    sleep_after_call=config.sleep_after_call,
+                )
+            elif config.chunked_outline:
+                overlap = max(0, config.outline_chunk_overlap)
+                segs = slice_segments(full_text, config.max_chars, overlap)
+                logger.info(
+                    "长文档分段大纲：%s 类型=%s 全文=%d 字 段长=%d 重叠=%d 共 %d 段",
+                    path.name,
+                    sk,
+                    full_len,
+                    config.max_chars,
+                    overlap,
+                    len(segs),
+                )
+                logger.info(
+                    "生成大纲（分段）：%s（provider=%s model=%s）",
+                    path.name,
+                    cfg.provider,
+                    cfg.model,
+                )
+                parts: list[OutlineResult] = []
+                for idx, (start, end, chunk) in enumerate(segs, 1):
+                    logger.info(
+                        "分段边界：%s 第 %d/%d 段 字符区间=[%d,%d) 长度=%d",
+                        path.name,
+                        idx,
+                        len(segs),
+                        start,
+                        end,
+                        end - start,
+                    )
+                    hdr = (
+                        f"[系统说明：全文共 {len(segs)} 段，当前为第 {idx} 段，"
+                        f"字符半开区间=[{start},{end})，本段长度 {end - start}。"
+                        f"请仅根据本段正文提炼大纲与测试点，勿编造本段未出现的功能。]\n\n"
+                    )
+                    o = generate_outline(
+                        cfg=cfg,
+                        llm=llm,
+                        source_name=f"{path.name} [段{idx}/{len(segs)}]",
+                        document_text=hdr + chunk,
+                        usage=usage,
+                        sleep_after_call=config.sleep_after_call,
+                    )
+                    parts.append(o)
+                    check_usage_budget(usage, config.max_total_tokens)
+                outline = merge_outline_results(parts, final_source_name=path.name)
+                logger.info(
+                    "分段大纲已合并：%s 合并后测试点=%d",
+                    path.name,
+                    len(outline.test_points),
+                )
+            else:
+                _log_truncation_kept_window(path, full_text, config.max_chars)
+                doc_for_outline = full_text[: config.max_chars]
+                logger.info(
+                    "生成大纲（截断后）：%s 类型=%s（provider=%s model=%s）",
+                    path.name,
+                    sk,
+                    cfg.provider,
+                    cfg.model,
+                )
+                outline = generate_outline(
+                    cfg=cfg,
+                    llm=llm,
+                    source_name=path.name,
+                    document_text=doc_for_outline,
+                    usage=usage,
+                    sleep_after_call=config.sleep_after_call,
+                )
             check_usage_budget(usage, config.max_total_tokens)
 
             logger.info(

@@ -15,6 +15,7 @@ from .llm import set_llm_io_logging
 from .logging_config import setup_generation_logging
 from .parsers import iter_input_files
 from .pipeline import PipelineConfig, init_llm_from_env, run_pipeline
+from .task_summary import build_task_summary, log_task_summary_line, write_task_summary_json
 from .usage import UsageTracker
 
 
@@ -99,6 +100,8 @@ def main() -> int:
         sleep_between_files=args.sleep_between_files,
         max_total_tokens=max_total_tokens,
         export_formats=parse_export_formats(args.exports),
+        chunked_outline=args.chunked_outline,
+        outline_chunk_overlap=args.outline_chunk_overlap,
     )
 
     def _cli_progress(msg: str, frac: float) -> None:
@@ -160,6 +163,7 @@ def main() -> int:
             console.print(f"[red]跳过 {name}：处理失败（详细信息见日志）[/red]")
 
     u = result.usage
+    cmp = u.token_comparison_dict()
     logger.info(
         "LLM 用量汇总：调用=%d，Token总预估≈%d（%s），接口上报累计=%d，请求字符=%d，回复字符=%d",
         u.calls,
@@ -169,6 +173,17 @@ def main() -> int:
         u.prompt_chars,
         u.completion_chars,
     )
+    logger.info(
+        "Token 对比：char÷4粗估=%d 接口上报累计=%d 差值(上报-粗估)=%s",
+        cmp["char_div4_token_estimate"],
+        cmp["sum_reported_total_tokens"],
+        cmp["reported_minus_char_div4"],
+    )
+
+    ts = build_task_summary(result=result, config=pcfg, log_file=log_file)
+    log_task_summary_line(logger, ts)
+    if args.task_summary_json:
+        write_task_summary_json(Path(args.task_summary_json).resolve(), ts)
 
     console.print(summary)
     if result.total_files:
@@ -179,6 +194,12 @@ def main() -> int:
         f"[bold]Token 总预估 ≈ {u.estimated_tokens}[/bold] "
         f"[dim]（{u.token_estimate_source}，{u.calls} 次调用）[/dim]"
     )
+    if cmp["sum_reported_total_tokens"] > 0:
+        console.print(
+            f"[dim]Token 核对：接口累计 {cmp['sum_reported_total_tokens']}，"
+            f"字符÷4 粗估 {cmp['char_div4_token_estimate']}，"
+            f"差值(上报−粗估) {cmp['reported_minus_char_div4']}[/dim]"
+        )
     console.print(f"[bold green]完成。[/bold green] 输出已写入：{output_dir}")
     total_elapsed_min = (time.time() - start_ts) / 60.0
     console.print(f"[bold green]任务总耗时 {total_elapsed_min:.2f} 分钟[/bold green]")
@@ -258,6 +279,23 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         metavar="PATH",
         help="从文件读取 URL 列表（每行一条，# 开头为注释）",
+    )
+    p.add_argument(
+        "--chunked-outline",
+        action="store_true",
+        help="超长正文时按 max_chars 分段各生成大纲再合并，减少截断盲区（大纲阶段 LLM 调用次数增加）",
+    )
+    p.add_argument(
+        "--outline-chunk-overlap",
+        type=int,
+        default=400,
+        help="分段大纲时相邻段重叠字符数，减轻段边界信息丢失（默认 400）",
+    )
+    p.add_argument(
+        "--task-summary-json",
+        default=None,
+        metavar="PATH",
+        help="将本次任务结构化摘要写入 JSON；日志中另有一行 TASK_SUMMARY 单行 JSON 便于采集",
     )
     return p.parse_args()
 

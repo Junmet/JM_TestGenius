@@ -113,8 +113,11 @@ python -m src.main
 | `--exports` | `none` | 额外导出模板（与 Excel 同源映射）：逗号分隔 `csv` / `zentao` / `testlink` / `jira`；**默认 `none`**（仅 xlsx/md/meta/xmind），需要时再写如 `--exports csv,zentao` |
 | `--url` | — | 远程需求 URL，可多次指定（见「远程需求」） |
 | `--url-file` | — | 从文件读取多行 URL（见「远程需求」） |
+| `--chunked-outline` | 关闭 | 全文超过 `--max-chars` 时按段分别生成大纲再合并，减少截断盲区（大纲阶段调用次数增加） |
+| `--outline-chunk-overlap` | `400` | 与 `--chunked-outline` 联用：相邻段重叠字符数 |
+| `--task-summary-json` | — | 将本次任务结构化摘要（参数、用量、各来源结果）写入 JSON；日志中另有一行 `TASK_SUMMARY` 单行 JSON |
 
-任务结束后，终端会输出 **LLM 用量**（调用次数、上报 token 累计、估算 token、请求/回复字符数），便于核对成本与配额。
+任务结束后，终端会输出 **LLM 用量**（调用次数、上报 token 累计、估算 token、请求/回复字符数），并输出 **Token 对比**（接口累计 vs 字符÷4 粗估）。**运维、配额、长文档与 TASK_SUMMARY 字段说明**见 [docs/operations-and-quotas.md](docs/operations-and-quotas.md)。
 
 ## Web 界面（可选）
 
@@ -124,7 +127,7 @@ python -m src.main
 streamlit run src/streamlit_app.py
 ```
 
-浏览器中可选择 **输入/输出目录**、**额外导出格式**（默认不勾选；勾选后生成 CSV / 禅道 / TestLink / Jira 模板）、查看 **进度条**、任务结束后 **预览 Excel 用例表** 与 Markdown 节选。侧栏可选 **控制台详细日志**（等同命令行 `--verbose`，终端输出 `src` 的 DEBUG/INFO）与 **LLM 请求/响应摘要**（等同 `LLM_LOG_IO`）。需已配置 `.env` 中的 API Key。每次点击「开始生成」会写入项目根目录 **`log/`** 下带时间戳的日志文件（与命令行一致），并在运行 `streamlit run` 的**终端**同步输出 INFO 级别日志（勾选详细日志时为 DEBUG）。
+浏览器中可选择 **输入/输出目录**、**额外导出格式**（默认不勾选；勾选后生成 CSV / 禅道 / TestLink / Jira 模板）、**长文档分段大纲**与**任务摘要 JSON 路径**（与 CLI `--chunked-outline` / `--task-summary-json` 一致）、查看 **进度条**、任务结束后 **预览 Excel 用例表** 与 Markdown 节选。侧栏可选 **控制台详细日志**（等同命令行 `--verbose`，终端输出 `src` 的 DEBUG/INFO）与 **LLM 请求/响应摘要**（等同 `LLM_LOG_IO`）。需已配置 `.env` 中的 API Key。每次点击「开始生成」会写入项目根目录 **`log/`** 下带时间戳的日志文件（与命令行一致），并在运行 `streamlit run` 的**终端**同步输出 INFO 级别日志（勾选详细日志时为 DEBUG）；任务结束同样会写入 **`TASK_SUMMARY`** 日志行。
 
 示例：
 

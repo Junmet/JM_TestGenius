@@ -95,6 +95,29 @@ class UsageTracker:
             return "接口返回累计"
         return "无接口 token 时按字符÷4 粗估"
 
+    def char_fallback_token_estimate(self) -> int:
+        """与 estimated_tokens 在无接口上报时的算法一致，便于与上报值对比。"""
+        return max(1, (self.prompt_chars + self.completion_chars) // 4)
+
+    def token_comparison_dict(self) -> dict[str, Any]:
+        """
+        结构化对比：接口累计 token vs 字符÷4 粗估，便于账单核对与看板采集。
+        """
+        char_est = self.char_fallback_token_estimate()
+        reported = self.total_tokens_reported
+        return {
+            "llm_calls": self.calls,
+            "budget_estimated_tokens": self.estimated_tokens,
+            "budget_estimate_source": self.token_estimate_source,
+            "sum_reported_total_tokens": reported,
+            "sum_prompt_tokens": self.prompt_tokens,
+            "sum_completion_tokens": self.completion_tokens,
+            "char_div4_token_estimate": char_est,
+            "reported_minus_char_div4": (reported - char_est) if reported > 0 else None,
+            "prompt_chars": self.prompt_chars,
+            "completion_chars": self.completion_chars,
+        }
+
     def budget_remaining(self, max_total_tokens: int | None) -> int | None:
         if max_total_tokens is None or max_total_tokens <= 0:
             return None

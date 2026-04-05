@@ -124,6 +124,77 @@ class CasesBatchResult(BaseModel):
     test_cases: list[TestCase] = Field(default_factory=list)
 
 
+def merge_outline_results(
+    parts: list[OutlineResult],
+    *,
+    final_source_name: str,
+    max_test_points: int = 36,
+) -> OutlineResult:
+    """
+    将多段「分段大纲」合并为单一 OutlineResult，供后续分批用例共用 context_summary。
+    测试点按文本去重（忽略大小写），并限制上限以防爆炸。
+    """
+    if not parts:
+        raise ValueError("merge_outline_results: parts 为空")
+    lang = parts[0].language
+    if len(parts) == 1:
+        return parts[0].model_copy(update={"source_name": final_source_name})
+
+    summary_blocks = [
+        f"【原文段 {i}/{len(parts)}】\n{(o.context_summary or '').strip()}"
+        for i, o in enumerate(parts, 1)
+    ]
+    context_summary = "\n\n".join(summary_blocks)
+    if len(context_summary) > 12000:
+        context_summary = context_summary[:11997] + "…"
+
+    seen_tp: set[str] = set()
+    merged_tp: list[str] = []
+    for o in parts:
+        for tp in o.test_points or []:
+            t = (tp or "").strip()
+            if not t:
+                continue
+            key = t.lower()[:600]
+            if key not in seen_tp:
+                seen_tp.add(key)
+                merged_tp.append(t)
+    merged_tp = merged_tp[:max_test_points]
+
+    def _merge_str_lists(attr: str) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for o in parts:
+            for x in getattr(o, attr) or []:
+                xx = (x or "").strip()
+                if not xx:
+                    continue
+                k = xx.lower()[:400]
+                if k not in seen:
+                    seen.add(k)
+                    out.append(xx)
+        return out
+
+    mindmap = ""
+    for o in parts:
+        if (o.mindmap_mermaid or "").strip():
+            mindmap = (o.mindmap_mermaid or "").strip()
+            break
+    if not mindmap:
+        mindmap = "mindmap\n  root((分段合并大纲))\n    详见测试点列表"
+
+    return OutlineResult(
+        source_name=final_source_name,
+        language=lang,
+        context_summary=context_summary,
+        mindmap_mermaid=mindmap,
+        test_points=merged_tp,
+        assumptions=_merge_str_lists("assumptions"),
+        risks=_merge_str_lists("risks"),
+        out_of_scope=_merge_str_lists("out_of_scope"),
+    )
+
+
 def _fill_missing_test_case_ids(data: Any) -> int:
     """
     模型偶发漏掉某条用例的 id，补占位编号以便通过 Pydantic 校验。
