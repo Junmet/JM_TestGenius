@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .export_templates import parse_export_formats
-from .input_loader import collect_parsed_documents
+from .input_loader import collect_parsed_documents, normalize_url_lines
 from .llm import set_llm_io_logging
 from .logging_config import setup_generation_logging
 from .parsers import iter_input_files
@@ -48,6 +48,8 @@ def main() -> int:
         if not uf.is_file():
             raise FileNotFoundError(f"--url-file 不是文件：{uf}")
         url_lines.extend(uf.read_text(encoding=args.encoding).splitlines())
+
+    url_lines = normalize_url_lines(url_lines)
 
     if not input_dir.exists():
         input_dir.mkdir(parents=True, exist_ok=True)

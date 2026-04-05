@@ -121,7 +121,7 @@ python -m src.main
 安装依赖后，在项目根目录执行：
 
 ```bash
-streamlit run streamlit_app.py
+streamlit run src/streamlit_app.py
 ```
 
 浏览器中可选择 **输入/输出目录**、**额外导出格式**（默认不勾选；勾选后生成 CSV / 禅道 / TestLink / Jira 模板）、查看 **进度条**、任务结束后 **预览 Excel 用例表** 与 Markdown 节选。侧栏可选 **控制台详细日志**（等同命令行 `--verbose`，终端输出 `src` 的 DEBUG/INFO）与 **LLM 请求/响应摘要**（等同 `LLM_LOG_IO`）。需已配置 `.env` 中的 API Key。每次点击「开始生成」会写入项目根目录 **`log/`** 下带时间戳的日志文件（与命令行一致），并在运行 `streamlit run` 的**终端**同步输出 INFO 级别日志（勾选详细日志时为 DEBUG）。

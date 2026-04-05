@@ -12,6 +12,20 @@ from .remote_sources import resolve_remote_line
 logger = logging.getLogger(__name__)
 
 
+def normalize_url_lines(raw_lines: list[str]) -> list[str]:
+    """
+    去空行、以 # 开头的注释行，与 collect_parsed_documents 中过滤规则一致。
+    用于 CLI 在统计与校验前与真实远程条数对齐（urls.txt 里常见空行分隔）。
+    """
+    out: list[str] = []
+    for line in raw_lines:
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+    return out
+
+
 def collect_parsed_documents(
     *,
     local_files: list[Path],

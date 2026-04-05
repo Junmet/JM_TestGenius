@@ -2,31 +2,44 @@
 本地 Web UI：选择输入/输出目录、查看进度、预览用例表。
 
 在项目根目录执行：
-  streamlit run streamlit_app.py
+  streamlit run src/streamlit_app.py
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent
+# 保证 `from src...` 可解析（与 `python -m src.main` 一致，工作目录为项目根）
+ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pandas as pd
 import streamlit as st
 
-from src.input_loader import collect_parsed_documents
+from src.input_loader import collect_parsed_documents, normalize_url_lines
 from src.llm import set_llm_io_logging
 from src.logging_config import setup_generation_logging
 from src.parsers import iter_input_files
 from src.pipeline import PipelineConfig, init_llm_from_env, run_pipeline
+from src.ui_paths import reveal_path_in_os
 from src.usage import UsageTracker
 
 logger = logging.getLogger(__name__)
+
+# 与命令行 main.py 中失败提示语义对齐，便于用户自助排查
+_ERROR_KIND_HINTS_ZH: dict[str, str] = {
+    "budget": "累计 token 超过「累计 token 上限」；可调高上限、减少文档数或降低「每文档最多用例数」。",
+    "length": "模型单次输出过长被截断；可调小「每批生成条数」或查看日志；程序已自动拆批与减半重试。",
+    "connection": "网络或代理异常；请检查网络后重试。",
+    "json": "模型返回 JSON 无法解析；可查看 log/ 与项目下 debug/ 中保存的原始片段。",
+    "auth": "API Key 无效或未授权；请检查 .env 中 DEEPSEEK_API_KEY / DASHSCOPE_API_KEY 及 LLM_PROVIDER。",
+    "other": "未分类错误；请查看终端与 log/ 完整堆栈。",
+}
 
 SESSION_GEN = "jm_last_generation"
 
@@ -49,22 +62,33 @@ def _strip_rich_markup(msg: str) -> str:
         return re.sub(r"\[[^[\]]*]", "", msg)
 
 
-def _serialize_gen_session(result: Any, *, output_dir: Path, log_file: Path) -> dict[str, Any]:
+def _serialize_gen_session(
+    result: Any,
+    *,
+    output_dir: Path,
+    log_file: Path,
+    n_local: int,
+    n_remote: int,
+    provider: str = "",
+    model: str = "",
+) -> dict[str, Any]:
     """上次生成结果写入 session_state，切换下拉框重跑脚本时仍能展示。"""
     u = result.usage
     outcomes: list[dict[str, Any]] = []
     for o in result.outcomes:
+        outs = o.output_paths or []
         outcomes.append(
             {
                 "name": o.path.name,
                 "ok": o.ok,
                 "error_kind": o.error_kind,
-                "output_paths": [p.name for p in (o.output_paths or [])],
+                "output_paths": [p.name for p in outs],
+                "output_paths_full": [str(p.resolve()) for p in outs],
             }
         )
     return {
         "output_dir": str(output_dir.resolve()),
-        "log_file": str(log_file),
+        "log_file": str(log_file.resolve()),
         "success_count": result.success_count,
         "fail_count": result.fail_count,
         "total_elapsed_seconds": result.total_elapsed_seconds,
@@ -72,27 +96,74 @@ def _serialize_gen_session(result: Any, *, output_dir: Path, log_file: Path) -> 
         "estimated_tokens": u.estimated_tokens,
         "token_estimate_source": u.token_estimate_source,
         "outcomes": outcomes,
+        "n_local": n_local,
+        "n_remote": n_remote,
+        "provider": provider,
+        "model": model,
     }
 
 
 def _render_results_from_session(gen: dict[str, Any]) -> None:
     out = Path(gen["output_dir"])
+    log_fp = Path(gen["log_file"])
+    prov = (gen.get("provider") or "").strip()
+    mdl = (gen.get("model") or "").strip()
+    model_line = f"模型：**{prov}** / **{mdl}**。" if prov and mdl else ""
+
     st.success(
         f"完成：成功 {gen['success_count']}，失败 {gen['fail_count']}。"
         f" LLM 调用 {gen['usage_calls']} 次。"
         f" **Token 总预估 ≈ {gen['estimated_tokens']}**（{gen['token_estimate_source']}）。"
         f" 耗时 {gen['total_elapsed_seconds'] / 60:.1f} 分钟。"
-    )
-    st.caption(
-        f"日志文件：`{gen['log_file']}`（与命令行相同，写入项目根目录 `log/`）\n\n"
-        f"**预览目录**（上次生成写入）：`{out}`"
+        + (f" {model_line}" if model_line else "")
     )
 
+    n_loc = gen.get("n_local", 0)
+    n_rem = gen.get("n_remote", 0)
+    st.caption(f"本任务来源：**{n_loc + n_rem}** 个（本地 {n_loc} + 远程 {n_rem}），与命令行统计方式一致。")
+
+    _path_key = hashlib.sha256(str(gen["log_file"]).encode()).hexdigest()[:16]
+    with st.expander("输出目录、日志路径（可复制）", expanded=False):
+        st.text_input(
+            "输出目录（绝对路径）",
+            value=str(out.resolve()),
+            key=f"{_path_key}_out",
+            disabled=True,
+        )
+        st.text_input(
+            "日志文件（绝对路径）",
+            value=str(log_fp.resolve()),
+            key=f"{_path_key}_log",
+            disabled=True,
+        )
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("在系统中打开输出目录", key=f"{_path_key}_btn_out"):
+                ok, msg = reveal_path_in_os(out)
+                (st.success if ok else st.warning)(msg)
+        with b2:
+            if st.button("在系统中打开日志所在目录", key=f"{_path_key}_btn_logdir"):
+                ok, msg = reveal_path_in_os(log_fp.parent)
+                (st.success if ok else st.warning)(msg)
+
+    failed = [r for r in gen["outcomes"] if not r["ok"]]
+    if failed:
+        with st.expander(f"失败来源（{len(failed)}）与处理建议", expanded=True):
+            for row in failed:
+                kind = row.get("error_kind") or "other"
+                hint = _ERROR_KIND_HINTS_ZH.get(kind, _ERROR_KIND_HINTS_ZH["other"])
+                st.markdown(f"**✗ {row['name']}**  · 类型：`{kind}`")
+                st.caption(hint)
+
+    st.subheader("各来源摘要")
     for row in gen["outcomes"]:
         if row["ok"]:
-            st.write("**✓**", row["name"])
+            names = row.get("output_paths") or []
+            extra = f" → {', '.join(names[:4])}" + ("…" if len(names) > 4 else "") if names else ""
+            st.markdown(f"**✓** `{row['name']}`{extra}")
         else:
-            st.write("**✗**", row["name"], f"（{row.get('error_kind') or '错误'}）")
+            kind = row.get("error_kind") or "other"
+            st.markdown(f"**✗** `{row['name']}`（{kind}）")
 
     _file_preview_fragment()
 
@@ -128,14 +199,23 @@ def _file_preview_fragment() -> None:
 def main() -> None:
     st.set_page_config(page_title="JM_TestGenius", layout="wide")
     st.title("JM_TestGenius · 需求 → 测试用例")
-    st.caption("在项目根目录执行：streamlit run streamlit_app.py（需已配置 .env 中的 API Key）")
+    st.caption(
+        "在项目根目录执行：`streamlit run src/streamlit_app.py`（需已配置 `.env` 中的 API Key）。"
+        "参数与行为与 `python -m src.main` 对齐（同目录扫描规则、远程 URL 行规则）。"
+    )
 
     with st.sidebar:
         input_dir = st.text_input("输入目录", value="input", help="放置 .docx / .md / .txt / .pdf 的文件夹")
         output_dir = st.text_input("输出目录", value="output")
         encoding = st.text_input("文本编码", value="utf-8")
         max_cases = st.number_input("每文档最多用例数", min_value=1, value=80, step=1)
-        batch_size = st.number_input("每批生成条数", min_value=1, value=10, step=1)
+        batch_size = st.number_input(
+            "每批生成条数",
+            min_value=1,
+            value=10,
+            step=1,
+            help="与 CLI --batch-size 一致；较大时会自动拆成多次请求合并，降低单次 JSON 截断风险。",
+        )
         max_chars = st.number_input("正文最大字符数", min_value=1000, value=15000, step=500)
         sleep_call = st.slider("每次 LLM 调用后休眠(秒)", 0.0, 5.0, 0.0, 0.5)
         sleep_file = st.slider("文件之间休眠(秒)", 0.0, 30.0, 0.0, 1.0)
@@ -158,9 +238,9 @@ def main() -> None:
         )
         url_text = st.text_area(
             "远程需求 URL（可选）",
-            height=96,
-            help="每行一条：http(s) 网页；或 confluence:页面URL、feishu:文档URL（需在 .env 配置凭证）。可与本地文件同时使用。",
-            placeholder="https://example.com/wiki/page\nconfluence:https://xxx.atlassian.net/wiki/spaces/SPACE/pages/123/...",
+            height=120,
+            help="每行一条；空行与 # 开头注释会被忽略（与命令行 --url-file 一致）。可与本地文件同时使用。",
+            placeholder="https://example.com/wiki/page\nfeishu:https://xxx.feishu.cn/docx/...\nconfluence:https://xxx.atlassian.net/wiki/...",
         )
         run_btn = st.button("开始生成", type="primary")
         if st.button("清除结果", help="仅清空本页展示，不删除 output 目录中的文件"):
@@ -174,7 +254,8 @@ def main() -> None:
             st.error(f"输入目录不存在或不是目录：{inp}")
         else:
             files = list(iter_input_files(inp))
-            url_lines = [ln.strip() for ln in (url_text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+            raw_url_lines = (url_text or "").splitlines()
+            url_lines = normalize_url_lines(raw_url_lines)
             if not files and not url_lines:
                 st.warning("请至少提供：输入目录中的支持文档，或上方「远程需求 URL」。")
             else:
@@ -201,12 +282,18 @@ def main() -> None:
 
                 progress = st.progress(0.0)
                 status = st.empty()
+                summary_bar = st.empty()
 
                 def cb(msg: str, frac: float) -> None:
-                    progress.progress(min(1.0, max(0.0, frac)))
-                    status.markdown(f"**状态** {_strip_rich_markup(msg)}")
+                    f = min(1.0, max(0.0, frac))
+                    # 预留前 5% 给加载阶段，避免一上来进度条为 0 无反馈
+                    progress.progress(0.05 + 0.95 * f)
+                    plain = _strip_rich_markup(msg)
+                    status.markdown(f"**进度** {f * 100:.0f}% · {plain}")
 
                 try:
+                    status.markdown("**进度** 正在拉取远程需求并解析本地文件…")
+                    progress.progress(0.02)
                     documents = collect_parsed_documents(
                         local_files=files,
                         url_lines=url_lines,
@@ -214,14 +301,27 @@ def main() -> None:
                     )
                 except Exception as e:
                     logger.exception("加载需求失败")
+                    progress.progress(0.0)
+                    status.empty()
                     st.error(f"加载需求失败：{e}")
                 else:
+                    n_total = len(documents)
+                    summary_bar.info(
+                        f"**任务** {n_total} 个来源（本地 **{len(files)}** + 远程 **{len(url_lines)}**）"
+                        f" → `{out}`（与命令行汇总行一致）"
+                    )
                     try:
                         cfg, llm = init_llm_from_env(None)
                     except Exception as e:
                         logger.exception("加载配置失败")
+                        progress.progress(0.0)
+                        status.empty()
                         st.error(f"加载配置失败：{e}")
                     else:
+                        progress.progress(0.05)
+                        status.markdown(
+                            f"**进度** 已就绪 · 模型 **{cfg.provider}** / **{cfg.model}** · 共 **{n_total}** 个来源待处理"
+                        )
                         pcfg = PipelineConfig(
                             output_dir=out,
                             encoding=encoding,
@@ -247,10 +347,15 @@ def main() -> None:
                             )
                         except Exception as e:
                             logger.exception("Web UI 生成任务异常终止")
+                            progress.progress(0.0)
+                            status.empty()
+                            st.error("任务异常终止（流水线内部通常已记录到各来源结果中；以下为未捕获异常）")
                             st.exception(e)
+                            st.caption(f"完整日志：`{log_file.resolve()}`")
                         else:
                             progress.progress(1.0)
-                            status.empty()
+                            status.markdown("**进度** 全部完成。")
+                            summary_bar.empty()
                             logger.info(
                                 "Web UI 任务结束：成功=%d 失败=%d LLM 调用=%d 估算 token≈%d 耗时=%.2f 分钟 日志=%s",
                                 result.success_count,
@@ -261,7 +366,13 @@ def main() -> None:
                                 log_file,
                             )
                             st.session_state[SESSION_GEN] = _serialize_gen_session(
-                                result, output_dir=out, log_file=log_file
+                                result,
+                                output_dir=out,
+                                log_file=log_file,
+                                n_local=len(files),
+                                n_remote=len(url_lines),
+                                provider=cfg.provider,
+                                model=cfg.model,
                             )
 
     gen = st.session_state.get(SESSION_GEN)

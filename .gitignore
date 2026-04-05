@@ -24,6 +24,9 @@ debug/
 # 日志
 log/
 
+# 文档
+docs/
+
 # IDE
 .idea/
 .vscode/

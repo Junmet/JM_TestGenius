@@ -6,3 +6,11 @@ requires-python = ">=3.10"
 
 [tool.ruff]
 line-length = 120
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+testpaths = [
+  "tests",
+]
+
